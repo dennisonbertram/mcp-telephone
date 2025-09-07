@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "twilio-realtime-mcp": {
+      "transport": {
+        "type": "http",
+        "url": "http://localhost:8081/mcp"
+      },
+      "fallbackTransport": {
+        "type": "websocket",
+        "url": "ws://localhost:8081/mcp/ws"
+      },
+      "env": {
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+        "TWILIO_ACCOUNT_SID": "${TWILIO_ACCOUNT_SID}",
+        "TWILIO_AUTH_TOKEN": "${TWILIO_AUTH_TOKEN}"
+      },
+      "description": "MCP server for making phone calls via Twilio and OpenAI Realtime API"
+    }
+  }
+}

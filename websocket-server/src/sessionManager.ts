@@ -1,5 +1,6 @@
 import { RawData, WebSocket } from "ws";
 import functions from "./functionHandlers";
+import { callStore } from "./svc/store";
 
 interface Session {
   twilioConn?: WebSocket;
@@ -11,6 +12,7 @@ interface Session {
   responseStartTimestamp?: number;
   latestMediaTimestamp?: number;
   openAIApiKey?: string;
+  callId?: string;
 }
 
 let session: Session = {};
@@ -19,10 +21,28 @@ export function handleCallConnection(ws: WebSocket, openAIApiKey: string) {
   cleanupConnection(session.twilioConn);
   session.twilioConn = ws;
   session.openAIApiKey = openAIApiKey;
+  
+  // Get active call from store
+  const activeCall = callStore.getActiveCall();
+  if (activeCall) {
+    session.callId = activeCall.id;
+    callStore.update(activeCall.id, { state: "connected", connectedAt: Date.now() });
+  }
 
   ws.on("message", handleTwilioMessage);
   ws.on("error", ws.close);
   ws.on("close", () => {
+    if (session.callId) {
+      const call = callStore.get(session.callId);
+      if (call && call.state === "connected") {
+        callStore.update(session.callId, { 
+          state: "completed", 
+          endedAt: Date.now() 
+        });
+      }
+      callStore.setActiveCall(null);
+    }
+    
     cleanupConnection(session.modelConn);
     cleanupConnection(session.twilioConn);
     session.twilioConn = undefined;
@@ -31,6 +51,7 @@ export function handleCallConnection(ws: WebSocket, openAIApiKey: string) {
     session.lastAssistantItem = undefined;
     session.responseStartTimestamp = undefined;
     session.latestMediaTimestamp = undefined;
+    session.callId = undefined;
     if (!session.frontendConn) session = {};
   });
 }
@@ -96,6 +117,15 @@ function handleTwilioMessage(data: RawData) {
         });
       }
       break;
+    case "dtmf":
+      // Handle DTMF tones (when user presses keys during call)
+      console.log("DTMF tone received:", msg.dtmf?.digit);
+      // Just acknowledge it - don't disconnect
+      // Could potentially pass to OpenAI or handle specific digits
+      break;
+    case "mark":
+      // Handle mark events from Twilio
+      break;
     case "close":
       closeAllConnections();
       break;
@@ -132,6 +162,30 @@ function tryConnectModel() {
 
   session.modelConn.on("open", () => {
     const config = session.saved_config || {};
+    
+    // Build system instructions with call context
+    let systemInstructions = "You are a helpful AI assistant making a phone call.";
+    
+    if (session.callId) {
+      const call = callStore.get(session.callId);
+      if (call) {
+        systemInstructions = `You are an AI assistant making a phone call.
+        
+Goal: ${call.goal}
+
+${call.instructions || ''}
+
+Context:
+${call.context ? JSON.stringify(call.context, null, 2) : 'None provided'}
+
+Important:
+- Stay focused on achieving the goal
+- Be conversational and natural
+- If you need to end the call, say goodbye appropriately
+- Remember you are on a phone call, so the person cannot see visual information`;
+      }
+    }
+    
     jsonSend(session.modelConn, {
       type: "session.update",
       session: {
@@ -141,6 +195,7 @@ function tryConnectModel() {
         input_audio_transcription: { model: "whisper-1" },
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
+        instructions: systemInstructions,
         ...config,
       },
     });
@@ -160,6 +215,25 @@ function handleModelMessage(data: RawData) {
   switch (event.type) {
     case "input_audio_buffer.speech_started":
       handleTruncation();
+      break;
+
+    case "conversation.item.input_audio_transcription.completed":
+      // Track user transcript
+      if (session.callId && event.transcript) {
+        callStore.addTranscript(session.callId, "user", event.transcript);
+      }
+      break;
+
+    case "response.audio_transcript.delta":
+      // Track assistant transcript (partial)
+      // We'll accumulate these and add complete transcript later
+      break;
+
+    case "response.audio_transcript.done":
+      // Track complete assistant transcript
+      if (session.callId && event.transcript) {
+        callStore.addTranscript(session.callId, "assistant", event.transcript);
+      }
       break;
 
     case "response.audio.delta":

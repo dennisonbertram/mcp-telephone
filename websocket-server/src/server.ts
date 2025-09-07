@@ -6,11 +6,14 @@ import http from "http";
 import { readFileSync } from "fs";
 import { join } from "path";
 import cors from "cors";
+import bodyParser from "body-parser";
 import {
   handleCallConnection,
   handleFrontendConnection,
 } from "./sessionManager";
 import functions from "./functionHandlers";
+import { mountMcp } from "./mcp/server";
+import { updateCallStatusFromWebhook } from "./svc/calls";
 
 dotenv.config();
 
@@ -50,6 +53,18 @@ app.all("/twiml", (req, res) => {
 app.get("/tools", (req, res) => {
   res.json(functions.map((f) => f.schema));
 });
+
+// Twilio status webhook endpoint
+app.post("/status", bodyParser.urlencoded({ extended: false }), (req, res) => {
+  const { CallSid, CallStatus } = req.body;
+  if (CallSid && CallStatus) {
+    updateCallStatusFromWebhook(CallSid, CallStatus);
+  }
+  res.sendStatus(200);
+});
+
+// Mount MCP server
+mountMcp(app, server);
 
 let currentCall: WebSocket | null = null;
 let currentLogs: WebSocket | null = null;
